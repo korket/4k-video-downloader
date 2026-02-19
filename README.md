@@ -22,8 +22,8 @@ A standalone desktop application for downloading YouTube videos in various resol
 
 1.  Clone the repository:
     ```bash
-    git clone git@github.com:korket/4k-youtube-video-downloader.git
-    cd 4k-youtube-video-downloader
+    git clone git@github.com:korket/4k-video-downloader.git
+    cd 4k-video-downloader
     ```
 
 2.  Install Python dependencies:
