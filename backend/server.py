@@ -27,9 +27,22 @@ def get_ydl_opts():
     opts = {
         'quiet': True,
         'no_warnings': True,
-        # Attempt to read from edge to bypass bot detection if possible
-        'cookiesfrombrowser': ('edge',),
     }
+    
+    # Priority 1: cookies.txt file next to the executable
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+    else:
+        exe_dir = BASE_DIR
+        
+    cookies_file = os.path.join(exe_dir, 'cookies.txt')
+    if os.path.exists(cookies_file):
+        opts['cookiefile'] = cookies_file
+    else:
+        # Priority 2: Attempt edge, but edge/chrome 127+ breaks due to DPAPI encryption
+        # We handle the DPAPI error later
+        opts['cookiesfrombrowser'] = ('edge',)
+        
     if os.path.exists(FFMPEG_PATH):
         opts['ffmpeg_location'] = FFMPEG_PATH
     return opts
@@ -101,10 +114,10 @@ def get_info():
             return jsonify(video_data)
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
-        if "Could not copy Chrome cookie database" in error_msg or "Permission denied" in error_msg:
-            return jsonify({'error': "YouTube bot protection is active. Please completely close your Microsoft Edge / Chrome browser so the app can use it to bypass the block, then try again."}), 400
+        if "Failed to decrypt with DPAPI" in error_msg or "Could not copy Chrome cookie database" in error_msg or "Permission denied" in error_msg:
+            return jsonify({'error': "Browser cookies are encrypted (App-Bound Encryption/DPAPI). To bypass YouTube's bot block, use an extension to export 'cookies.txt' and place the file exactly next to this App's .exe file."}), 400
         elif "Sign in to confirm you’re not a bot" in error_msg:
-             return jsonify({'error': "YouTube bot protection is active. Please ensure you are logged into YouTube on Microsoft Edge and close the browser, then try again."}), 400
+             return jsonify({'error': "YouTube bot protection is active. Please place an exported 'cookies.txt' file next to the .exe to bypass it."}), 400
         return jsonify({'error': error_msg}), 400
     except Exception as e:
         return jsonify({'error': f"Unexpected Error: {str(e)}"}), 500
@@ -257,10 +270,10 @@ def download_task(job_id, url, res, format_id, target_path=None):
             
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
-        if "Could not copy Chrome cookie database" in error_msg or "Permission denied" in error_msg:
-            jobs[job_id]['error'] = "YouTube bot protection is active. Please safely close Microsoft Edge / Chrome before downloading."
+        if "Failed to decrypt with DPAPI" in error_msg or "Could not copy Chrome cookie database" in error_msg or "Permission denied" in error_msg:
+            jobs[job_id]['error'] = "Browser cookies are encrypted (App-Bound Encryption/DPAPI). To bypass YouTube's bot block, use an extension to export 'cookies.txt' and place the file exactly next to this App's .exe file."
         elif "Sign in to confirm you’re not a bot" in error_msg:
-            jobs[job_id]['error'] = "YouTube bot protection is active. Please log in to YouTube on Microsoft Edge and close the browser before downloading."
+            jobs[job_id]['error'] = "YouTube bot protection is active. Please place an exported 'cookies.txt' file next to the .exe to bypass it."
         else:
             jobs[job_id]['error'] = error_msg
         jobs[job_id]['status'] = 'error'
