@@ -166,17 +166,62 @@ class Api:
 # In-memory job store
 jobs = {}
 
+import re
+
+def strip_ansi(text):
+    return re.sub(r'\x1b\[[0-9;]*m', '', str(text)) if text else ''
+
 def update_job_progress(job_id, d):
+    job = jobs.get(job_id)
+    if not job: return
+
     if d['status'] == 'downloading':
-        total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+        if 'global_total_bytes' not in job:
+            info = d.get('info_dict', {})
+            req = info.get('requested_downloads')
+            if req and len(req) > 1:
+                total = sum([f.get('filesize') or f.get('filesize_approx') or 0 for f in req])
+                job['global_total_bytes'] = total if total > 0 else None
+            else:
+                job['global_total_bytes'] = d.get('total_bytes') or d.get('total_bytes_estimate')
+            
+            job['previous_files_bytes'] = 0
+            job['current_filename'] = d.get('filename')
+
+        if d.get('filename') and d.get('filename') != job.get('current_filename'):
+            job['current_filename'] = d.get('filename')
+
+        speed = strip_ansi(d.get('_speed_str', '')).strip()
+        eta = strip_ansi(d.get('_eta_str', '')).strip()
+        if speed: job['speed'] = speed
+        if eta: job['eta'] = eta
+
         downloaded = d.get('downloaded_bytes', 0)
-        jobs[job_id]['downloaded_bytes'] = downloaded
-        jobs[job_id]['total_bytes'] = total
-        if total > 0:
-            jobs[job_id]['progress'] = (downloaded / total) * 100
+        current_file_total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+        
+        glob_total = job.get('global_total_bytes')
+        if not glob_total:
+            glob_total = current_file_total
+            
+        real_downloaded = job.get('previous_files_bytes', 0) + downloaded
+        job['downloaded_bytes'] = real_downloaded
+        job['total_bytes'] = glob_total
+        
+        if glob_total and glob_total > 0:
+            calc_prog = (real_downloaded / glob_total) * 100
+            # Never go backwards
+            job['progress'] = max(job.get('progress', 0), min(calc_prog, 99.9))
+            
     elif d['status'] == 'finished':
-        jobs[job_id]['progress'] = 100
-        jobs[job_id]['status'] = 'merging'
+        finished_bytes = d.get('total_bytes') or d.get('downloaded_bytes') or 0
+        job['previous_files_bytes'] = job.get('previous_files_bytes', 0) + finished_bytes
+
+def update_job_postprocessor(job_id, d):
+    job = jobs.get(job_id)
+    if not job: return
+    if d['status'] == 'started':
+        job['status'] = 'merging'
+        job['progress'] = 100
 
 def get_unique_filename(directory, filename):
     base, ext = os.path.splitext(filename)
@@ -195,6 +240,7 @@ def download_task(job_id, url, res, format_id, target_path=None):
             
         ydl_opts = get_ydl_opts()
         ydl_opts['progress_hooks'] = [lambda d: update_job_progress(job_id, d)]
+        ydl_opts['postprocessor_hooks'] = [lambda d: update_job_postprocessor(job_id, d)]
         
         # Use job_id in temp filename to avoid collisions during download
         output_template = os.path.join(temp_dir, f'%(title)s_{job_id}.%(ext)s')
