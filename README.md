@@ -75,3 +75,24 @@ The executable will be located in the `dist/` folder.
 - **Backend**: Python, Flask, yt-dlp
 - **Window Management**: pywebview
 - **Processing**: FFmpeg
+
+## Creating a Release
+
+To publish a new version of the application:
+
+1.  **Build the Executable**:
+    Follow the "Building the Executable" steps above to generate `dist/YouTubeDownloader.exe`.
+
+2.  **Tag the Release** (Optional but recommended):
+    ```bash
+    git tag -a v1.0.0 -m "Initial Release"
+    git push origin v1.0.0
+    ```
+
+3.  **Create Release on GitHub**:
+    - Go to your repository on GitHub.
+    - Click **Releases** > **Draft a new release**.
+    - Choose the tag (e.g., `v1.0.0`).
+    - Title the release (e.g., "v1.0.0 - Initial Release").
+    - Drag and drop `dist/YouTubeDownloader.exe` into the "Attach binaries" section.
+    - Click **Publish release**.

@@ -27,6 +27,8 @@ def get_ydl_opts():
     opts = {
         'quiet': True,
         'no_warnings': True,
+        # Attempt to read from edge to bypass bot detection if possible
+        'cookiesfrombrowser': ('edge',),
     }
     if os.path.exists(FFMPEG_PATH):
         opts['ffmpeg_location'] = FFMPEG_PATH
@@ -97,8 +99,15 @@ def get_info():
             })
             
             return jsonify(video_data)
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        if "Could not copy Chrome cookie database" in error_msg or "Permission denied" in error_msg:
+            return jsonify({'error': "YouTube bot protection is active. Please completely close your Microsoft Edge / Chrome browser so the app can use it to bypass the block, then try again."}), 400
+        elif "Sign in to confirm you’re not a bot" in error_msg:
+             return jsonify({'error': "YouTube bot protection is active. Please ensure you are logged into YouTube on Microsoft Edge and close the browser, then try again."}), 400
+        return jsonify({'error': error_msg}), 400
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': f"Unexpected Error: {str(e)}"}), 500
 
 # ... (rest of code)
 
@@ -246,6 +255,15 @@ def download_task(job_id, url, res, format_id, target_path=None):
             jobs[job_id]['final_path'] = final_path
             jobs[job_id]['filename'] = os.path.basename(final_path)
             
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        if "Could not copy Chrome cookie database" in error_msg or "Permission denied" in error_msg:
+            jobs[job_id]['error'] = "YouTube bot protection is active. Please safely close Microsoft Edge / Chrome before downloading."
+        elif "Sign in to confirm you’re not a bot" in error_msg:
+            jobs[job_id]['error'] = "YouTube bot protection is active. Please log in to YouTube on Microsoft Edge and close the browser before downloading."
+        else:
+            jobs[job_id]['error'] = error_msg
+        jobs[job_id]['status'] = 'error'
     except Exception as e:
         jobs[job_id]['status'] = 'error'
         jobs[job_id]['error'] = str(e)
