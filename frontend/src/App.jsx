@@ -35,12 +35,15 @@ function App() {
 
             if (!res.ok) {
                 const text = await res.text();
+                let parsedError = null;
                 try {
                     const data = JSON.parse(text);
-                    throw new Error(data.error || `Server Error: ${res.status}`);
+                    parsedError = data.error || `Server Error: ${res.status}`;
                 } catch (e) {
-                    throw new Error(`Request failed: ${res.status} ${res.statusText}`);
+                    // Not JSON
+                    parsedError = `Request failed: ${res.status} ${res.statusText}`;
                 }
+                throw new Error(parsedError);
             }
 
             const data = await res.json();
@@ -107,12 +110,15 @@ function App() {
 
             if (!prepareRes.ok) {
                 const text = await prepareRes.text();
+                let parsedError = null;
                 try {
                     const err = JSON.parse(text);
-                    throw new Error(err.error || 'Failed to start download');
+                    parsedError = err.error || 'Failed to start download';
                 } catch (e) {
-                    throw new Error(`Prepare failed: ${prepareRes.status}`);
+                    // Not JSON
+                    parsedError = `Prepare failed: ${prepareRes.status}`;
                 }
+                throw new Error(parsedError);
             }
 
             const { job_id } = await prepareRes.json();
