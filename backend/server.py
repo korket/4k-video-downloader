@@ -39,9 +39,7 @@ def get_ydl_opts():
     if os.path.exists(cookies_file):
         opts['cookiefile'] = cookies_file
     else:
-        # Priority 2: Attempt edge, but edge/chrome 127+ breaks due to DPAPI encryption
-        # We handle the DPAPI error later
-        opts['cookiesfrombrowser'] = ('edge',)
+        opts['cookiesfrombrowser'] = ('firefox',)
         
     if os.path.exists(FFMPEG_PATH):
         opts['ffmpeg_location'] = FFMPEG_PATH
