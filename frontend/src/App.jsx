@@ -72,25 +72,41 @@ function App() {
 
             // Check if pywebview is available (it might be injected)
             if (window.pywebview && window.pywebview.api) {
-                const safeTitle = (videoInfo.title || 'video').replace(/[<>:"/\\|?*]/g, '').trim();
-                const isMp3 = selectedFormat === 'mp3';
-                const ext = isMp3 ? 'mp3' : 'mp4';
-                const defaultName = `${safeTitle}.${ext}`;
-                const fileFilter = isMp3 ? 'MP3 Audio (*.mp3)' : 'MP4 Video (*.mp4)';
-
-                try {
-                    // Open Save Dialog
-                    targetPath = await window.pywebview.api.save_file_dialog(defaultName, fileFilter);
-                    if (!targetPath) {
+                if (videoInfo.is_playlist) {
+                    try {
+                        targetPath = await window.pywebview.api.open_folder_dialog("Select Download Folder");
+                        if (!targetPath) {
+                            setDownloading(false);
+                            setDownloadProgress(prev => ({ ...prev, status: 'idle' }));
+                            return; // User cancelled
+                        }
+                    } catch (err) {
+                        console.error("Folder Dialog error", err);
+                        setError("Folder Dialog Failed: " + err);
                         setDownloading(false);
-                        setDownloadProgress(prev => ({ ...prev, status: 'idle' }));
-                        return; // User cancelled
+                        return;
                     }
-                } catch (err) {
-                    console.error("Dialog error", err);
-                    setError("Save Dialog Failed: " + err);
-                    setDownloading(false);
-                    return;
+                } else {
+                    const safeTitle = (videoInfo.title || 'video').replace(/[<>:"/\\|?*]/g, '').trim();
+                    const isMp3 = selectedFormat === 'mp3';
+                    const ext = isMp3 ? 'mp3' : 'mp4';
+                    const defaultName = `${safeTitle}.${ext}`;
+                    const fileFilter = isMp3 ? 'MP3 Audio (*.mp3)' : 'MP4 Video (*.mp4)';
+    
+                    try {
+                        // Open Save Dialog
+                        targetPath = await window.pywebview.api.save_file_dialog(defaultName, fileFilter);
+                        if (!targetPath) {
+                            setDownloading(false);
+                            setDownloadProgress(prev => ({ ...prev, status: 'idle' }));
+                            return; // User cancelled
+                        }
+                    } catch (err) {
+                        console.error("Dialog error", err);
+                        setError("Save Dialog Failed: " + err);
+                        setDownloading(false);
+                        return;
+                    }
                 }
             } else {
                 console.warn("PyWebView API not found, falling back to auto-download.");
@@ -104,7 +120,8 @@ function App() {
                     url,
                     res: selectedFormat,
                     format_id: selectedFormat,
-                    target_path: targetPath // Send chosen path to backend
+                    target_path: targetPath, // Send chosen path to backend
+                    is_playlist: videoInfo.is_playlist
                 }),
             });
 
@@ -141,7 +158,14 @@ function App() {
                 setDownloadProgress(prev => ({
                     ...prev,
                     serverProgress: progressData.progress || 0,
-                    status: jobStatus
+                    status: jobStatus,
+                    stream_type: progressData.stream_type,
+                    downloaded_str: progressData.downloaded_str,
+                    total_str: progressData.total_str,
+                    speed: progressData.speed,
+                    eta: progressData.eta,
+                    playlist_index: progressData.playlist_index,
+                    playlist_count: progressData.playlist_count
                 }));
 
                 if (jobStatus === 'saved') {
@@ -261,7 +285,7 @@ function App() {
                         <button
                             onClick={handleDownload}
                             disabled={downloading || !videoInfo.formats.length}
-                            className="w-full bg-white hover:bg-gray-200 disabled:bg-neutral-800 disabled:text-neutral-600 disabled:cursor-not-allowed text-black font-bold py-3.5 rounded-lg transform active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-1 relative overflow-hidden text-sm border border-transparent shrink-0 mb-2"
+                            className={`w-full bg-white hover:bg-gray-200 disabled:bg-neutral-800 ${downloading ? 'disabled:text-white' : 'disabled:text-neutral-600'} disabled:cursor-not-allowed text-black font-bold py-3.5 rounded-lg transform active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-1 relative overflow-hidden text-sm border border-transparent shrink-0 mb-2`}
                         >
                             {downloading ? (
                                 <>
@@ -272,11 +296,16 @@ function App() {
                                         </svg>
                                         <span className="font-bold tracking-wide">
                                             {downloadProgress.status === 'downloading' && (
-                                                <>
-                                                    {`${(downloadProgress.serverProgress || 0).toFixed(1)}%`}
-                                                    {downloadProgress.speed && ` • ${downloadProgress.speed}`}
-                                                    {downloadProgress.eta && ` • ETA: ${downloadProgress.eta}`}
-                                                </>
+                                                <div className="flex flex-col items-center leading-tight shrink-0 overflow-hidden text-clip whitespace-nowrap w-full">
+                                                    <span>
+                                                        {downloadProgress.playlist_index ? `[${downloadProgress.playlist_index}/${downloadProgress.playlist_count}] ` : ''}
+                                                        {downloadProgress.stream_type ? `Downloading ${downloadProgress.stream_type}: ` : 'Downloading: '}
+                                                        {`${(downloadProgress.serverProgress || 0).toFixed(1)}%`}
+                                                    </span>
+                                                    <span className="text-xs font-normal text-gray-400 mt-0.5 max-w-[80vw] truncate">
+                                                        {downloadProgress.downloaded_str || '0MiB'} / {downloadProgress.total_str || 'Unknown'} • {downloadProgress.speed || '0MiB/s'} • ETA: {downloadProgress.eta || '--:--'}
+                                                    </span>
+                                                </div>
                                             )}
                                             {downloadProgress.status === 'merging' && 'Processing File...'}
                                             {downloadProgress.status === 'saved' && 'Done'}

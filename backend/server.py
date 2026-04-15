@@ -31,10 +31,19 @@ def get_ydl_opts():
     
     # Priority 1: cookies.txt file next to the executable
     if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        BASE_DIR = sys._MEIPASS
         exe_dir = os.path.dirname(sys.executable)
+        bundle_dir = sys._MEIPASS
     else:
+        # Running as script
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         exe_dir = BASE_DIR
-        
+        bundle_dir = BASE_DIR
+
+    # Ensure bundled executables (like deno.exe and ffmpeg.exe) are discoverable by yt-dlp
+    os.environ['PATH'] = bundle_dir + os.pathsep + os.path.join(bundle_dir, 'bin') + os.pathsep + os.environ.get('PATH', '')
+            
     cookies_file = os.path.join(exe_dir, 'cookies.txt')
     if os.path.exists(cookies_file):
         opts['cookiefile'] = cookies_file
@@ -69,26 +78,53 @@ def get_info():
         return jsonify({'error': 'URL is required'}), 400
 
     try:
-        with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
+        ydl_opts = get_ydl_opts()
+        ydl_opts['extract_flat'] = 'in_playlist'
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            
+            is_playlist = info.get('_type') == 'playlist'
+            
+            if is_playlist:
+                entries = info.get('entries', [])
+                video_data = {
+                    'title': info.get('title'),
+                    'thumbnail': None,
+                    'duration_string': f"{len(entries)} Videos",
+                    'is_playlist': True,
+                    'formats': [
+                        {'format_id': 'best', 'resolution': 'Best Quality', 'ext': 'mp4', 'note': 'Highest available'},
+                        {'format_id': '1080', 'resolution': '1080p Limit', 'ext': 'mp4', 'note': 'Up to 1080p'},
+                        {'format_id': '720', 'resolution': '720p Limit', 'ext': 'mp4', 'note': 'Up to 720p'},
+                        {'format_id': '480', 'resolution': '480p Limit', 'ext': 'mp4', 'note': 'Up to 480p'},
+                        {'format_id': 'mp3', 'resolution': 'Audio Only', 'ext': 'mp3', 'note': 'Best Audio'}
+                    ]
+                }
+                return jsonify(video_data)
             
             formats = []
             
             # Filter and process formats
+            unique_formats = {}
             for f in info.get('formats', []):
                 # We want video formats that have resolution
                 if f.get('vcodec') != 'none' and f.get('resolution') != 'audio only':
                     res = f.get('height')
                     if res:
                         format_id = f['format_id']
-                        # Combine video+audio (best audio)
-                        formats.append({
+                        ext = f['ext']
+                        filesize = f.get('filesize') or f.get('filesize_approx') or 0
+                        # yt-dlp sorts from worst to best, so later entries overwrite earlier ones
+                        # grouping by (res, ext) gives us the best variant per resolution/container
+                        unique_formats[(res, ext)] = {
                             'format_id': format_id,
                             'resolution': f"{res}p",
-                            'ext': f['ext'],
-                            'filesize': f.get('filesize', 0),
+                            'ext': ext,
+                            'filesize': filesize,
                             'note': f.get('format_note', '')
-                        })
+                        }
+            
+            formats = list(unique_formats.values())
 
             # Video details
             duration_sec = info.get('duration')
@@ -97,6 +133,7 @@ def get_info():
                 'thumbnail': info.get('thumbnail'),
                 'duration': duration_sec,
                 'duration_string': format_duration(duration_sec),
+                'is_playlist': False,
                 'formats': sorted(formats, key=lambda x: int(x['resolution'].replace('p','')) if x['resolution'] and 'p' in x['resolution'] else 0, reverse=True)
             }
             
@@ -123,6 +160,20 @@ def get_info():
 # ... (rest of code)
 
 class Api:
+    def open_folder_dialog(self, title=None):
+        try:
+            if webview.windows:
+                active_window = webview.windows[0]
+                result = active_window.create_file_dialog(
+                    webview.FOLDER_DIALOG, 
+                    directory=''
+                )
+                if result and len(result) > 0:
+                    return result if isinstance(result, str) else result[0]
+            return None
+        except Exception as e:
+            return None
+
     def save_file_dialog(self, filename, file_filter=None):
         try:
             if webview.windows:
@@ -174,41 +225,48 @@ def update_job_progress(job_id, d):
     if not job: return
 
     if d['status'] == 'downloading':
-        if 'global_total_bytes' not in job:
-            info = d.get('info_dict', {})
+        job['status'] = 'downloading'
+        
+        info = d.get('info_dict', {})
+        if 'req_count' not in job:
             req = info.get('requested_downloads')
-            if req and len(req) > 1:
-                total = sum([f.get('filesize') or f.get('filesize_approx') or 0 for f in req])
-                job['global_total_bytes'] = total if total > 0 else None
-            else:
-                job['global_total_bytes'] = d.get('total_bytes') or d.get('total_bytes_estimate')
-            
-            job['previous_files_bytes'] = 0
+            job['req_count'] = len(req) if req else 1
+            job['current_file_index'] = 1
             job['current_filename'] = d.get('filename')
+            
+        p_index = info.get('playlist_index')
+        p_count = info.get('playlist_count')
+        if p_index and p_count:
+            job['playlist_index'] = p_index
+            job['playlist_count'] = p_count
 
         if d.get('filename') and d.get('filename') != job.get('current_filename'):
             job['current_filename'] = d.get('filename')
+            job['current_file_index'] = job.get('current_file_index', 1) + 1
+
+        req_count = job.get('req_count', 1)
+        idx = job.get('current_file_index', 1)
+        
+        if req_count > 1:
+            job['stream_type'] = 'Audio' if idx > 1 else 'Video'
+        else:
+            job['stream_type'] = ''
 
         speed = strip_ansi(d.get('_speed_str', '')).strip()
         eta = strip_ansi(d.get('_eta_str', '')).strip()
+        down_str = strip_ansi(d.get('_downloaded_bytes_str', '')).strip()
+        total_str = strip_ansi(d.get('_total_bytes_str') or d.get('_total_bytes_estimate_str', '')).strip()
+        
         if speed: job['speed'] = speed
         if eta: job['eta'] = eta
+        if down_str: job['downloaded_str'] = down_str
+        if total_str: job['total_str'] = total_str
 
-        downloaded = d.get('downloaded_bytes', 0)
-        current_file_total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-        
-        glob_total = job.get('global_total_bytes')
-        if not glob_total:
-            glob_total = current_file_total
-            
-        real_downloaded = job.get('previous_files_bytes', 0) + downloaded
-        job['downloaded_bytes'] = real_downloaded
-        job['total_bytes'] = glob_total
-        
-        if glob_total and glob_total > 0:
-            calc_prog = (real_downloaded / glob_total) * 100
-            # Never go backwards
-            job['progress'] = max(job.get('progress', 0), min(calc_prog, 99.9))
+        percent_str = strip_ansi(d.get('_percent_str', '')).replace('%', '').strip()
+        try:
+            job['progress'] = float(percent_str)
+        except:
+            pass
             
     elif d['status'] == 'finished':
         finished_bytes = d.get('total_bytes') or d.get('downloaded_bytes') or 0
@@ -230,19 +288,25 @@ def get_unique_filename(directory, filename):
         counter += 1
     return new_filename
 
-def download_task(job_id, url, res, format_id, target_path=None):
+def download_task(job_id, url, res, format_id, target_path=None, is_playlist=False):
     try:
-        temp_dir = os.path.join(BASE_DIR, 'temp')
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-            
         ydl_opts = get_ydl_opts()
         ydl_opts['progress_hooks'] = [lambda d: update_job_progress(job_id, d)]
         ydl_opts['postprocessor_hooks'] = [lambda d: update_job_postprocessor(job_id, d)]
         
-        # Use job_id in temp filename to avoid collisions during download
-        output_template = os.path.join(temp_dir, f'%(title)s_{job_id}.%(ext)s')
-        ydl_opts['outtmpl'] = output_template
+        if is_playlist:
+            # For playlists, target_path should be a directory the user chose
+            from yt_dlp.utils import sanitize_filename
+            target_dir = target_path if target_path else os.path.join(os.path.expanduser('~'), 'Downloads', 'Playlist')
+            os.makedirs(target_dir, exist_ok=True)
+            output_template = os.path.join(target_dir, f'%(playlist_index)02d - %(title)s.%(ext)s')
+            ydl_opts['outtmpl'] = output_template
+        else:
+            temp_dir = os.path.join(BASE_DIR, 'temp')
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
+            output_template = os.path.join(temp_dir, f'%(title)s_{job_id}.%(ext)s')
+            ydl_opts['outtmpl'] = output_template
 
         if format_id == 'mp3':
              format_str = 'bestaudio/best'
@@ -253,6 +317,19 @@ def download_task(job_id, url, res, format_id, target_path=None):
                      'preferredcodec': 'mp3',
                      'preferredquality': '192',
                  }],
+             })
+        elif is_playlist and format_id != 'best':
+             # E.g. format_id == '1080'
+             format_str = f"bestvideo[height<={format_id}]+bestaudio/best[height<={format_id}]/best"
+             ydl_opts.update({
+                'format': format_str,
+                'merge_output_format': 'mp4',
+             })
+        elif is_playlist and format_id == 'best':
+             format_str = "bestvideo+bestaudio/best"
+             ydl_opts.update({
+                'format': format_str,
+                'merge_output_format': 'mp4',
              })
         elif format_id:
              format_str = f"{format_id}+bestaudio/best"
@@ -269,48 +346,54 @@ def download_task(job_id, url, res, format_id, target_path=None):
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            temp_filename = ydl.prepare_filename(info)
             
-            # Adjust extension for mp3 or merged mp4
-            if format_id == 'mp3':
-                temp_filename = temp_filename.rsplit('.', 1)[0] + '.mp3'
-            elif info.get('requested_downloads'):
-                 # It might have been merged, check if mp4 exists
-                 possible_name = temp_filename.rsplit('.', 1)[0] + '.mp4'
-                 if os.path.exists(possible_name):
-                     temp_filename = possible_name
-            
-            # Determine destination
-            if target_path:
-                final_path = target_path
-                # Ensure directory exists (though save dialog usually handles this)
-                os.makedirs(os.path.dirname(final_path), exist_ok=True)
-            else:
-                # Fallback to Downloads folder
-                title = info.get('title', 'video')
-                uploader = info.get('uploader', 'unknown')
-                ext = os.path.splitext(temp_filename)[1]
-
-                import re
-                safe_title = re.sub(r'[<>:"/\\|?*]', '', title).strip()
-                safe_uploader = re.sub(r'[<>:"/\\|?*]', '', uploader).strip()
-                desired_filename = f"{safe_title} - {safe_uploader}{ext}"
+            if not is_playlist:
+                temp_filename = ydl.prepare_filename(info)
                 
-                downloads_folder = os.path.join(os.path.expanduser('~'), 'Downloads')
-                if not os.path.exists(downloads_folder):
-                    downloads_folder = os.path.join(os.path.expanduser('~'), 'Desktop')
-
-                final_filename = get_unique_filename(downloads_folder, desired_filename)
-                final_path = os.path.join(downloads_folder, final_filename)
-            
-            # Move file
-            import shutil
-            # If target exists, overwrite or handle? shutil.move overwrites if dest is file
-            shutil.move(temp_filename, final_path)
-            
+                # Adjust extension for mp3 or merged mp4
+                if format_id == 'mp3':
+                    temp_filename = temp_filename.rsplit('.', 1)[0] + '.mp3'
+                elif info.get('requested_downloads'):
+                     # It might have been merged, check if mp4 exists
+                     possible_name = temp_filename.rsplit('.', 1)[0] + '.mp4'
+                     if os.path.exists(possible_name):
+                         temp_filename = possible_name
+                
+                # Determine destination
+                if target_path:
+                    final_path = target_path
+                    # Ensure directory exists (though save dialog usually handles this)
+                    os.makedirs(os.path.dirname(final_path), exist_ok=True)
+                else:
+                    # Fallback to Downloads folder
+                    title = info.get('title', 'video')
+                    uploader = info.get('uploader', 'unknown')
+                    ext = os.path.splitext(temp_filename)[1]
+    
+                    import re
+                    safe_title = re.sub(r'[<>:"/\\|?*]', '', title).strip()
+                    safe_uploader = re.sub(r'[<>:"/\\|?*]', '', uploader).strip()
+                    desired_filename = f"{safe_title} - {safe_uploader}{ext}"
+                    
+                    downloads_folder = os.path.join(os.path.expanduser('~'), 'Downloads')
+                    if not os.path.exists(downloads_folder):
+                        downloads_folder = os.path.join(os.path.expanduser('~'), 'Desktop')
+    
+                    final_filename = get_unique_filename(downloads_folder, desired_filename)
+                    final_path = os.path.join(downloads_folder, final_filename)
+                
+                # Move file
+                import shutil
+                # If target exists, overwrite or handle? shutil.move overwrites if dest is file
+                shutil.move(temp_filename, final_path)
+                
+                jobs[job_id]['final_path'] = final_path
+                jobs[job_id]['filename'] = os.path.basename(final_path)
+            else:
+                # Playlist just uses the Target Directory as its complete destination
+                jobs[job_id]['filename'] = f"Playlist downloaded to Folder"
+                
             jobs[job_id]['status'] = 'saved'
-            jobs[job_id]['final_path'] = final_path
-            jobs[job_id]['filename'] = os.path.basename(final_path)
             
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
@@ -332,6 +415,7 @@ def prepare_download():
     res = data.get('res')
     format_id = data.get('format_id')
     target_path = data.get('target_path')
+    is_playlist = data.get('is_playlist', False)
     
     if not url:
         return jsonify({'error': 'URL is required'}), 400
@@ -344,7 +428,7 @@ def prepare_download():
         'total_bytes': 0
     }
     
-    thread = threading.Thread(target=download_task, args=(job_id, url, res, format_id, target_path))
+    thread = threading.Thread(target=download_task, args=(job_id, url, res, format_id, target_path, is_playlist))
     thread.daemon = True
     thread.start()
     
