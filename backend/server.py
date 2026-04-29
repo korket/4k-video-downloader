@@ -23,6 +23,18 @@ else:
 
 CORS(app, expose_headers=["Content-Disposition"])
 
+def cleanup_temp():
+    """Remove all files from the temp directory on startup."""
+    temp_dir = os.path.join(BASE_DIR, 'temp')
+    if os.path.exists(temp_dir):
+        for f in os.listdir(temp_dir):
+            filepath = os.path.join(temp_dir, f)
+            try:
+                if os.path.isfile(filepath):
+                    os.remove(filepath)
+            except Exception:
+                pass  # Skip files that can't be deleted
+
 def get_ydl_opts():
     opts = {
         'quiet': True,
@@ -305,8 +317,9 @@ def download_task(job_id, url, res, format_id, target_path=None, is_playlist=Fal
             temp_dir = os.path.join(BASE_DIR, 'temp')
             if not os.path.exists(temp_dir):
                 os.makedirs(temp_dir)
-            output_template = os.path.join(temp_dir, f'%(title)s_{job_id}.%(ext)s')
+            output_template = os.path.join(temp_dir, '%(title)s.%(ext)s')
             ydl_opts['outtmpl'] = output_template
+            ydl_opts['continuedl'] = True  # Enable resume from .part files
 
         if format_id == 'mp3':
              format_str = 'bestaudio/best'
@@ -404,9 +417,30 @@ def download_task(job_id, url, res, format_id, target_path=None, is_playlist=Fal
         else:
             jobs[job_id]['error'] = error_msg
         jobs[job_id]['status'] = 'error'
+        # Clean up failed temp files (but keep .part files for potential resume)
+        if not is_playlist:
+            _cleanup_failed_job(job_id)
     except Exception as e:
         jobs[job_id]['status'] = 'error'
         jobs[job_id]['error'] = str(e)
+        if not is_playlist:
+            _cleanup_failed_job(job_id)
+
+def _cleanup_failed_job(job_id):
+    """Remove completed temp files for a failed job, but keep .part files for resume."""
+    temp_dir = os.path.join(BASE_DIR, 'temp')
+    if not os.path.exists(temp_dir):
+        return
+    for f in os.listdir(temp_dir):
+        filepath = os.path.join(temp_dir, f)
+        # Keep .part files so yt-dlp can resume on retry
+        if f.endswith('.part'):
+            continue
+        try:
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+        except Exception:
+            pass
 
 @app.route('/api/prepare_download', methods=['POST'])
 def prepare_download():
@@ -452,6 +486,9 @@ def serve_static(path):
     return send_from_directory(template_folder, path)
 
 if __name__ == '__main__':
+    # Clean up stale temp files from previous sessions
+    cleanup_temp()
+
     # Find an open port
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
