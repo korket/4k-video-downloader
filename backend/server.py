@@ -163,8 +163,8 @@ def get_info():
         error_msg = str(e)
         if "Failed to decrypt with DPAPI" in error_msg or "Could not copy Chrome cookie database" in error_msg or "Permission denied" in error_msg:
             return jsonify({'error': "Browser cookies are encrypted (App-Bound Encryption/DPAPI). To bypass YouTube's bot block, use an extension to export 'cookies.txt' and place the file exactly next to this App's .exe file."}), 400
-        elif "Sign in to confirm you’re not a bot" in error_msg:
-             return jsonify({'error': "YouTube bot protection is active. Please place an exported 'cookies.txt' file next to the .exe to bypass it."}), 400
+        elif "Sign in to confirm you’re not a bot" in error_msg or "HTTP Error 403: Forbidden" in error_msg:
+             return jsonify({'error': "YouTube blocked the download (HTTP 403 / Bot Protection). Please place an exported 'cookies.txt' file next to the .exe to bypass it."}), 400
         return jsonify({'error': error_msg}), 400
     except Exception as e:
         return jsonify({'error': f"Unexpected Error: {str(e)}"}), 500
@@ -412,8 +412,8 @@ def download_task(job_id, url, res, format_id, target_path=None, is_playlist=Fal
         error_msg = str(e)
         if "Failed to decrypt with DPAPI" in error_msg or "Could not copy Chrome cookie database" in error_msg or "Permission denied" in error_msg:
             jobs[job_id]['error'] = "Browser cookies are encrypted (App-Bound Encryption/DPAPI). To bypass YouTube's bot block, use an extension to export 'cookies.txt' and place the file exactly next to this App's .exe file."
-        elif "Sign in to confirm you’re not a bot" in error_msg:
-            jobs[job_id]['error'] = "YouTube bot protection is active. Please place an exported 'cookies.txt' file next to the .exe to bypass it."
+        elif "Sign in to confirm you’re not a bot" in error_msg or "HTTP Error 403: Forbidden" in error_msg:
+            jobs[job_id]['error'] = "YouTube blocked the download (HTTP 403 / Bot Protection). Please place an exported 'cookies.txt' file next to the .exe to bypass it."
         else:
             jobs[job_id]['error'] = error_msg
         jobs[job_id]['status'] = 'error'
